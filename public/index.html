@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>電気設備設計</title>
+  <meta name="description" content="電気設備設計において、ユーザーの入力情報から「施工図面のレイアウト構成（指示書）」および「概算の資材・施工見積（日本国内の現行単価ベース）」を自動生成します。">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#e9eef3">
+  <link rel="icon" href="img/app-192.png">
+  <link rel="apple-touch-icon" href="img/app-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="bg-art" aria-hidden="true"></div>
+  <main>
+    <header class="hero no-print">
+      <img class="hero-logo" src="img/app-192.png" alt="" width="64" height="64">
+      <div>
+        <p class="eyebrow">Electrical Design Assistant</p>
+        <h1>電気設備設計</h1>
+        <p class="lead">建物の条件を入れると、施工図面のレイアウト構成（指示書）と概算見積を作ります。</p>
+      </div>
+    </header>
+
+    <div class="file-bar no-print">
+      <label class="small-button file-open">
+        <span class="btn-icon" style="--icon: url(img/btn-open.png)" aria-hidden="true"></span>ファイルを開く
+        <input type="file" id="open-file" accept=".json,application/json">
+      </label>
+      <button type="button" id="save-file" class="small-button" disabled title="生成すると保存できます"><span class="btn-icon" style="--icon: url(img/btn-save.png)" aria-hidden="true"></span>結果を保存</button>
+      <button type="button" id="reset-all" class="small-button"><span class="btn-icon" style="--icon: url(img/btn-reset.png)" aria-hidden="true"></span>リセット</button>
+      <span id="file-status" class="file-status" role="status"></span>
+    </div>
+
+    <form id="input-form" class="card no-print">
+      <h2>入力条件</h2>
+      <h3 class="section-title"><img class="icon" src="img/icon-building.png" alt="" width="40" height="40">建物概要</h3>
+      <div id="building-fields" class="grid"></div>
+
+      <h3 class="section-title"><img class="icon" src="img/icon-floorplan.png" alt="" width="40" height="40">建物図面（平面図）</h3>
+      <p class="hint">平面図の画像（PNG・JPEG）または PDF を選んでください。階ごとの図面を何枚か選んでも、複数の階を1枚にまとめた図面でもかまいません（PDF は全ページを1枚ずつ登録します）。図面に機器と配線を描いた「配線図面例」と、その概算価格を作ります。</p>
+      <div class="drawing-add">
+        <label class="file-button">図面を追加
+          <input type="file" id="drawing-file" accept="image/png,image/jpeg,image/webp,application/pdf" multiple>
+        </label>
+        <span id="drawing-count" class="hint"></span>
+      </div>
+      <ol id="drawing-list" class="drawing-list"></ol>
+      <datalist id="floor-names"></datalist>
+
+      <h3 class="section-title"><img class="icon" src="img/icon-wiring.png" alt="" width="40" height="40">電気設備（4カテゴリ）</h3>
+      <p class="hint">分かる範囲で選んでください。「未定」の項目は標準的な仕様で補完して試算します。</p>
+      <div id="equipment-fields" class="equipment"></div>
+
+      <label class="check">
+        <img class="icon" src="img/icon-search.png" alt="" width="40" height="40">
+        <input type="checkbox" name="use_search" checked>
+        <span>価格を Web 検索で確かめる<small>Google 検索の最新情報を参照します。時間が少し長くなります。</small></span>
+      </label>
+
+      <div class="actions">
+        <button type="submit" id="generate"><span class="btn-icon" style="--icon: url(img/btn-sparkle.png)" aria-hidden="true"></span>生成する</button>
+        <span id="status" role="status"></span>
+      </div>
+
+      <button type="button" id="no-api-toggle" class="small-button" aria-expanded="false" aria-controls="no-api"><span class="btn-icon" style="--icon: url(img/btn-paste.png)" aria-hidden="true"></span>API を使わない場合はこちら</button>
+      <div id="no-api" class="no-api" hidden>
+        <p class="hint">Gemini などの AI に下のプロンプトを送り、返ってきた回答を貼り付けると、API を使わずに結果を表示できます。図面がある場合は、その AI に図面の画像も添付してください。</p>
+        <h4>1. プロンプトをコピーして AI に送る</h4>
+        <pre id="prompt-preview"></pre>
+        <button type="button" id="copy-prompt" class="secondary">プロンプトをコピー</button>
+        <h4>2. AI の回答を貼り付けて表示する</h4>
+        <textarea id="paste-text" rows="6" placeholder="返ってきた回答をここに貼り付けます"></textarea>
+        <button type="button" id="paste-apply" class="secondary">貼り付けた回答を表示</button>
+      </div>
+    </form>
+
+    <section id="result" hidden>
+      <div class="card no-print">
+        <h2 class="section-title"><img class="icon" src="img/icon-guide.png" alt="" width="40" height="40">施工図面作成ガイド・見積（AIの回答）</h2>
+        <div id="markdown" class="markdown"></div>
+      </div>
+
+      <div id="wiring" class="card" hidden>
+        <div class="estimate-head">
+          <h2 class="section-title"><img class="icon" src="img/icon-wiring.png" alt="" width="40" height="40">配線図面例</h2>
+          <button type="button" id="download-drawing" class="no-print">画像で保存</button>
+        </div>
+        <div id="layer-toggles" class="layer-toggles no-print"></div>
+        <div class="edit-bar no-print">
+          <button type="button" id="edit-toggle" class="secondary">機器を編集する</button>
+          <div id="edit-tools" class="edit-tools" hidden>
+            <p id="edit-status" class="edit-status" role="status"></p>
+            <div id="edit-palette" class="edit-palette" aria-label="編集の道具"></div>
+            <div class="edit-actions">
+              <button type="button" id="edit-delete" class="secondary" disabled>選んだ機器を削除</button>
+              <button type="button" id="edit-undo" class="secondary" disabled>元に戻す</button>
+              <button type="button" id="edit-reset" class="secondary" disabled>自動配置に戻す</button>
+            </div>
+            <div class="edit-done">
+              <button type="button" id="edit-done">編集を反映する</button>
+            </div>
+          </div>
+        </div>
+        <div id="wiring-drawings"></div>
+        <h3>凡例</h3>
+        <div class="table-wrap">
+          <table id="wiring-legend" class="legend">
+            <thead><tr><th>記号</th><th>名称</th><th>系統</th><th class="num">数量</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>階ごとの内訳</h3>
+        <div class="table-wrap">
+          <table id="wiring-floors">
+            <thead><tr><th>階</th><th>図面</th><th class="num">フロア数</th><th class="num">機器数（1フロア）</th><th class="num">配線長（1フロア）</th><th class="num">金額（1フロア・円）</th><th class="num">小計（円）</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>配線図面の概算価格（図面の範囲）</h3>
+        <div class="totals" id="wiring-totals"></div>
+        <div class="table-wrap">
+          <table id="wiring-estimate">
+            <thead>
+              <tr><th>品名</th><th class="num">数量</th><th>単位</th><th class="num">材料単価（円）</th><th class="num">労務単価（円）</th><th class="num">金額（円）</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="disclaimer" id="wiring-note"></p>
+      </div>
+
+      <div id="estimate" class="card" hidden>
+        <div class="estimate-head">
+          <h2 class="section-title"><img class="icon" src="img/icon-estimate.png" alt="" width="40" height="40">概算資材・施工見積書（建物全体）</h2>
+          <button type="button" id="print-pdf" class="no-print">PDFで保存</button>
+        </div>
+        <p class="print-only print-meta" id="print-meta"></p>
+        <dl id="estimate-conditions" class="conditions"></dl>
+        <div class="totals" id="totals"></div>
+
+        <h3>カテゴリ別の小計</h3>
+        <div id="chart" class="viz-root"></div>
+
+        <h3>カテゴリ別概算費用内訳</h3>
+        <div class="table-wrap">
+          <table id="estimate-table">
+            <thead>
+              <tr><th>分類</th><th>主な部材・機器</th><th>数量/単位</th><th class="num">資材費（円）</th><th class="num">施工・労務費（円）</th><th class="num">小計（円）</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <h3>見積条件・補足注意事項</h3>
+        <ul id="estimate-notes" class="notes"></ul>
+        <div id="sources" hidden>
+          <h3>参照した外部データ（Web 検索）</h3>
+          <ol id="source-list" class="sources"></ol>
+        </div>
+        <p class="disclaimer">※ AI による概算です。正式な見積は現地調査・詳細設計のうえで作成してください。</p>
+      </div>
+
+      <p id="json-error" class="error no-print" hidden></p>
+
+      <div class="file-bar file-bar-bottom no-print">
+        <button type="button" id="save-file-bottom" class="save-big"><span class="btn-icon" style="--icon: url(img/btn-save.png)" aria-hidden="true"></span>結果を保存</button>
+        <span id="file-status-bottom" class="file-status" role="status"></span>
+      </div>
+    </section>
+  </main>
+  <div id="tooltip" class="tooltip" hidden></div>
+  <script src="layout.js"></script>
+  <script src="drawing.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

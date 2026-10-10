@@ -1,0 +1,19 @@
+{
+  "name": "esd-app",
+  "version": "1.0.0",
+  "description": "電気設備の施工図面作成ガイドと概算見積を生成する PWA（Express サーバー）",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "bash test.sh"
+  },
+  "license": "ISC",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
+  }
+}

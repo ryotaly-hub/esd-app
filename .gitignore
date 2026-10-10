@@ -4,3 +4,4 @@ docs/*
 !docs/.gitkeep
 assets/*
 !assets/.gitkeep
+node_modules/

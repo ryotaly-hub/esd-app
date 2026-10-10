@@ -4,8 +4,8 @@
     {
       "type": "chrome",
       "request": "launch",
-      "name": "Chrome で開く（先にローカルサーバーを起動）",
-      "url": "http://localhost:8000/"
+      "name": "Chrome で開く（先に npm start でサーバーを起動）",
+      "url": "http://localhost:3000/"
     }
   ]
 }
