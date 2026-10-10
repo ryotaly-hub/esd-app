@@ -1,0 +1,12 @@
+{
+  "name": "esd-app",
+  "short_name": "esd-app",
+  "description": "電気設備設計において、ユーザーの入力情報から「施工図面のレイアウト構成（指示書）」および「概算の資材・施工見積（日本国内の現行単価ベース）」を自動生成します。",
+  "lang": "ja",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2f6fed",
+  "icons": []
+}

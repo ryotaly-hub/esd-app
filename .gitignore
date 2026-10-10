@@ -1,0 +1,6 @@
+.env
+.DS_Store
+docs/*
+!docs/.gitkeep
+assets/*
+!assets/.gitkeep
