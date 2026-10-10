@@ -7,7 +7,7 @@
 電気設備設計において、ユーザーの入力情報から「施工図面のレイアウト構成（指示書）」および「概算の資材・施工見積（日本国内の現行単価ベース）」を自動生成します。
 
 - 種類: Node.js（Express）サーバー ＋ PWA の画面（`public/` のビルド無しの素の HTML/CSS/JS）
-- デプロイ先: Vercel
+- デプロイ先: Vercel（公開 URL: https://esd-app-fawn.vercel.app/ 、`main` に push すると自動でデプロイ）
 
 ## コマンド
 
