@@ -46,4 +46,4 @@
 - [ ] `gh secret set API_KEY` で GitHub Secrets に API_KEY を登録する
 - [ ] generate-illustration スキルでアイコン（192px・512px）を作り、`public/icons/` に置いて public/manifest.webmanifest の icons に追加する
 - [ ] Vercel でこのリポジトリをインポートしてデプロイを設定する
-- [ ] Vercel の Environment Variables に `API_KEY`（必要なら `GEMINI_MODEL`）を登録する
+- [ ] Vercel の Environment Variables に `API_KEY` と `ACCESS_PASSWORD`（公開 URL の合言葉。必要なら `GEMINI_MODEL`）を登録する

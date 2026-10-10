@@ -46,8 +46,14 @@ MOCK_PID=$!
 PORT=$PORT API_KEY=test-key GEMINI_API_BASE="http://localhost:$MOCK_PORT" node index.js > /tmp/${PWD##*/}_test_server.log 2>&1 &
 SERVER_PID=$!
 
+# 合言葉（ACCESS_PASSWORD）付きのアプリ（Basic 認証の確認用）
+AUTH_PORT=$((PORT + 1))
+lsof -ti:$AUTH_PORT | xargs kill -9 2>/dev/null
+PORT=$AUTH_PORT API_KEY=test-key ACCESS_PASSWORD=secret-word GEMINI_API_BASE="http://localhost:$MOCK_PORT" node index.js > /tmp/${PWD##*/}_test_auth_server.log 2>&1 &
+AUTH_PID=$!
+
 cleanup() {
-  kill "$SERVER_PID" "$MOCK_PID" 2>/dev/null
+  kill "$SERVER_PID" "$MOCK_PID" "$AUTH_PID" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -184,6 +190,15 @@ assert_eq "edit: 室から離れた機器は室なし（-1）" "-1" "$(echo "$ed
 assert_eq "edit: すべての機器が配線につながる" "true" "$(echo "$edited" | cut -d, -f3)"
 assert_eq "edit: 引き直した配線も縦横の直線だけ" "true" "$(echo "$edited" | cut -d, -f4)"
 assert_eq "crop: 階の外形に余白を付けて切り出す" "75 59 925 912" "$(echo "$edited" | cut -d, -f5)"
+
+# --- 合言葉（Basic 認証） ---
+AUTH_URL="http://localhost:$AUTH_PORT"
+assert_eq "auth: 合言葉なしは 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' "$AUTH_URL/")"
+assert_eq "auth: API も合言葉なしは 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' "$AUTH_URL/api/options")"
+assert_eq "auth: 合言葉が違うと 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' -u user:wrong "$AUTH_URL/")"
+assert_eq "auth: 合言葉が合えば 200（ユーザー名は何でもよい）" "200" "$(curl -s -o /dev/null -w '%{http_code}' -u anyone:secret-word "$AUTH_URL/api/options")"
+assert_eq "auth: manifest は合言葉なしで取れる" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$AUTH_URL/manifest.webmanifest")"
+assert_eq "auth: 合言葉が無い設定なら認証なし" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/")"
 
 # --- 存在しないルート ---
 assert_eq "GET /api/not-found status" "404" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/not-found")"

@@ -29,7 +29,7 @@ router.post('/generate', async (req, res) => {
   const useSearch = req.body?.useSearch === true;
   const drawings = sanitizeDrawings(req.body?.drawings);
   if (!drawings) {
-    return res.status(400).json({ error: `図面の画像を読み込めませんでした（PNG・JPEG・WebP、${MAX_DRAWINGS}枚・合計 4MB まで）` });
+    return res.status(400).json({ error: `図面の画像を読み込めませんでした（PNG・JPEG・WebP、${MAX_DRAWINGS}枚・合計 3MB まで）` });
   }
   try {
     // 1段目: 図面ごとに室を検出する（並列）。1枚でも読み取れなければ、室の範囲も2段目で返させる方式にする。
