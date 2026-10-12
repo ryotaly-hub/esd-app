@@ -206,6 +206,8 @@ label.check small { display: block; font-size: 0.8rem; color: var(--muted); }
 .editing .wiring-drawing { outline: 2px dashed var(--accent); outline-offset: 3px; }
 .editing .wiring-drawing svg { touch-action: none; user-select: none; }
 .editing .wiring-drawing .hit { pointer-events: all; cursor: grab; }
+.wiring-drawing .route-hit { pointer-events: none; }
+.editing[data-tool="select"] .wiring-drawing .route-hit { pointer-events: stroke; cursor: move; }
 .editing[data-tool="add"] .wiring-drawing svg, .editing[data-tool="add"] .wiring-drawing .hit { cursor: crosshair; }
 @media (max-width: 560px) {
   .tool-group-label { flex-basis: 100%; }

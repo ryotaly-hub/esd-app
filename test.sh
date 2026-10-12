@@ -191,6 +191,40 @@ assert_eq "edit: すべての機器が配線につながる" "true" "$(echo "$ed
 assert_eq "edit: 引き直した配線も縦横の直線だけ" "true" "$(echo "$edited" | cut -d, -f4)"
 assert_eq "crop: 階の外形に余白を付けて切り出す" "75 59 925 912" "$(echo "$edited" | cut -d, -f5)"
 
+# --- 画面で配線ルートを動かしたとき（insertPins / moveSegment と routeFloor の overrides） ---
+moved=$(node -e '
+const L = require("./public/layout.js");
+const types = JSON.parse(process.argv[1]).drawing.deviceTypes;
+const floor = { box_2d: [100, 100, 900, 900], panel: [850, 880], rooms: [
+  { name: "事務室", kind: "room", box_2d: [120, 120, 700, 600], devices: { light: 6, outlet: 2 } },
+  { name: "廊下", kind: "corridor", box_2d: [720, 120, 880, 880], devices: { light: 2 } } ] };
+const f = L.layoutFloor(floor, { width: 1000, height: 1000 }, 8, types, 30);
+f.devices.forEach(d => { d.p = d.p.map(v => Math.round(v * 10) / 10); }); // 画面と同じく 0.1px 単位にそろえる
+Object.assign(f, L.routeFloor(f, f.devices, 8, 30));
+const rt = f.routes.find(r => r.system === "lighting" && r.room === "事務室");
+const pins = f.devices.map(d => d.p);
+const base = L.insertPins(rt.points, pins);
+const i = L.nearestSegment(base, rt.points[2]);
+const pts = L.moveSegment(base, i, 25, pins);
+const onSeg = (p, a, b) => Math.abs((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) < 0.5
+  && p[0] >= Math.min(a[0], b[0]) - 0.2 && p[0] <= Math.max(a[0], b[0]) + 0.2 && p[1] >= Math.min(a[1], b[1]) - 0.2 && p[1] <= Math.max(a[1], b[1]) + 0.2;
+const mine = f.devices.filter(d => d.system === "lighting" && d.room === "事務室");
+const connected = mine.every(d => pts.slice(1).some((p, k) => onSeg(d.p, pts[k], p)));
+const orth = pts.slice(1).every((p, k) => p[0] === pts[k][0] || p[1] === pts[k][1]);
+const ends = String(pts[0]) === String(rt.points[0]) && String(pts[pts.length - 1]) === String(rt.points[rt.points.length - 1]);
+const ov = { [rt.key]: { sig: rt.sig, points: pts } };
+const kept = L.routeFloor(f, f.devices, 8, 30, ov).routes.find(r => r.key === rt.key);
+const dev = mine[0]; dev.p = [dev.p[0] + 20, dev.p[1]];                      // 同じ室・系統の機器を動かす
+const dropped = L.routeFloor(f, f.devices, 8, 30, ov).routes.find(r => r.key === rt.key);
+console.log([String(pts) !== String(rt.points), connected, orth, ends, kept.edited && String(kept.points) === String(pts), dropped.edited].join(","));
+' "$opts")
+assert_eq "route: 区間を動かすとルートが変わる" "true" "$(echo "$moved" | cut -d, -f1)"
+assert_eq "route: 動かしても機器から線が外れない" "true" "$(echo "$moved" | cut -d, -f2)"
+assert_eq "route: 動かしても縦横の直線だけ" "true" "$(echo "$moved" | cut -d, -f3)"
+assert_eq "route: 分電盤側と末端は動かない" "true" "$(echo "$moved" | cut -d, -f4)"
+assert_eq "route: 手で直したルートを使う" "true" "$(echo "$moved" | cut -d, -f5)"
+assert_eq "route: 機器を動かすと自動のルートに戻る" "false" "$(echo "$moved" | cut -d, -f6)"
+
 # --- 合言葉（Basic 認証） ---
 AUTH_URL="http://localhost:$AUTH_PORT"
 assert_eq "auth: 合言葉なしは 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' "$AUTH_URL/")"

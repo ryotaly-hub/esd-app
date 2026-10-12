@@ -151,7 +151,7 @@
   // 室の入口（分電盤に一番近い辺の中央。壁から少し内側）
   const entryOf = (r, panel, s) => onSide(inset(r, s * 0.9), entrySide(r, panel), 0.5);
 
-  // 折れ線の重複点・一直線上の中間点を除く
+  // 折れ線の重複点・一直線上の中間点を除く（折り返して戻る点は、その先の機器が切れないよう残す）
   function simplify(pts) {
     const out = [];
     for (const p of pts) {
@@ -160,11 +160,66 @@
       if (last && last[0] === q[0] && last[1] === q[1]) continue;
       if (out.length >= 2) {
         const a = out[out.length - 2];
-        if ((a[0] === last[0] && last[0] === q[0]) || (a[1] === last[1] && last[1] === q[1])) out.pop();
+        const ahead = (last[0] - a[0]) * (q[0] - last[0]) >= 0 && (last[1] - a[1]) * (q[1] - last[1]) >= 0;
+        if (ahead && ((a[0] === last[0] && last[0] === q[0]) || (a[1] === last[1] && last[1] === q[1]))) out.pop();
       }
       out.push(q);
     }
     return out;
+  }
+
+  /* ---------- 画面での配線ルートの編集 ----------
+   * 配線の1区間をドラッグすると、その区間が縦横を保ったまま平行に動く。機器・分電盤の点（pins）と
+   * 両端は動かさず、動かした区間との間に短い線を足してつなぐ。 */
+  const PIN_TOL = 0.2;
+  const isPinned = (p, pins) => pins.some(q => Math.abs(q[0] - p[0]) <= PIN_TOL && Math.abs(q[1] - p[1]) <= PIN_TOL);
+  const orthogonal = pts => pts.length >= 2 && pts.slice(1).every((p, i) => p[0] === pts[i][0] || p[1] === pts[i][1]);
+
+  // 区間の途中にある機器の点を折れ線の点として足す（その点で区間を分け、機器から線が外れないようにする）
+  function insertPins(pts, pins) {
+    const out = [pts[0]];
+    pts.slice(1).forEach((b, i) => {
+      const a = pts[i];
+      const within = (v, lo, hi) => v > Math.min(lo, hi) && v < Math.max(lo, hi);
+      const mid = pins
+        .filter(p => (a[1] === b[1]
+          ? Math.abs(p[1] - a[1]) <= PIN_TOL && within(p[0], a[0], b[0])
+          : a[0] === b[0] && Math.abs(p[0] - a[0]) <= PIN_TOL && within(p[1], a[1], b[1])))
+        .map(p => (a[1] === b[1] ? [p[0], a[1]] : [a[0], p[1]]))
+        .sort((p, q) => dist(a, p) - dist(a, q));
+      out.push(...mid, b);
+    });
+    return out;
+  }
+
+  // 点 p に一番近い区間の番号
+  function nearestSegment(pts, p) {
+    let best = -1, bestD = Infinity;
+    pts.slice(1).forEach((b, i) => {
+      const a = pts[i];
+      if (a[0] === b[0] && a[1] === b[1]) return;
+      const d = distToRect(p, { x0: Math.min(a[0], b[0]), y0: Math.min(a[1], b[1]), x1: Math.max(a[0], b[0]), y1: Math.max(a[1], b[1]) });
+      if (d < bestD) { best = i; bestD = d; }
+    });
+    return best;
+  }
+
+  // i 番目の区間を delta だけ平行に動かす（横の線は上下に、縦の線は左右に）
+  function moveSegment(pts, i, delta, pins) {
+    const a = pts[i], b = pts[i + 1];
+    if (!a || !b || (a[0] === b[0] && a[1] === b[1])) return pts;
+    const axis = a[1] === b[1] ? 1 : 0;
+    const move = p => { const q = [...p]; q[axis] += delta; return q; };
+    const fixedA = i === 0 || isPinned(a, pins), fixedB = i + 1 === pts.length - 1 || isPinned(b, pins);
+    return simplify([...pts.slice(0, i), ...(fixedA ? [a] : []), move(a), move(b), ...(fixedB ? [b] : []), ...pts.slice(i + 2)]);
+  }
+
+  // 自動のルートの目印。手で直したルートは、元にした自動のルートと目印が同じとき（機器・分電盤が動いていないとき）だけ使う。
+  function sigOf(pts) {
+    let h = 5381;
+    const str = pts.map(p => p.join(',')).join(' ');
+    for (let k = 0; k < str.length; k++) h = ((h * 33) ^ str.charCodeAt(k)) >>> 0;
+    return h.toString(36);
   }
 
   // 分電盤から室の入口までの幹線。廊下があれば廊下の中心線を通る（縦横の直線だけ）。
@@ -223,7 +278,8 @@
 
   // 機器の位置から配線ルートと系統ごとの配線長を作る（自動配置のあとも、画面で機器を動かしたあとも使う）。
   // 機器は ri（rooms の番号、室の外は -1）を持つ。室の中の機器は廊下を通って入口から、室の外の機器は分電盤から直接つなぐ。
-  function routeFloor(geo, devices, s, widthM) {
+  // overrides は画面で手で直したルート（{ 系統|室の番号: { sig, points } }）。元の自動のルートが変わっていなければそれを使う。
+  function routeFloor(geo, devices, s, widthM, overrides = null) {
     const { outline, rooms } = geo;
     const corridors = rooms.filter(r => r.kind === 'corridor');
     const panelDevice = devices.find(d => d.type === 'panel');
@@ -235,6 +291,12 @@
       if (d.ri >= 0 && byRoom[d.ri]) byRoom[d.ri].push(d); else loose.push(d);
     }
     const routes = [];
+    const add = (system, room, key, auto) => {
+      const sig = sigOf(auto);
+      const o = overrides?.[key];
+      const use = !!o && o.sig === sig && Array.isArray(o.points) && orthogonal(o.points);
+      routes.push({ system, room, key, sig, points: use ? o.points : auto, edited: use });
+    };
     rooms.forEach((room, i) => {
       if (!byRoom[i].length) return;
       const entry = entryOf(room.rect, panel, s);
@@ -243,12 +305,12 @@
         if (!mine.length) return;
         const offset = (k - 1.5) * s * 0.55; // 系統ごとに幹線を少しずらして重ならないようにする
         const tr = shift(trunk(panel, entry, corridors, room), offset);
-        routes.push({ system: sys, room: room.name, points: simplify([...tr, ...chain(entry, mine, s).slice(1)]) });
+        add(sys, room.name, `${sys}|${i}`, simplify([...tr, ...chain(entry, mine, s).slice(1)]));
       });
     });
     SYSTEM_ORDER.forEach(sys => {
       const mine = loose.filter(d => d.system === sys);
-      if (mine.length) routes.push({ system: sys, room: '', points: simplify(chain(panel, mine, s)) });
+      if (mine.length) add(sys, '', `${sys}|-1`, simplify(chain(panel, mine, s)));
     });
     const mPerPx = widthM ? widthM / width(outline) : null;
     return {
@@ -296,7 +358,7 @@
     return { name: String(floor.name || ''), outline, rooms, devices, widthM, ...routeFloor({ outline, rooms }, devices, s, widthM) };
   }
 
-  const api = { layoutFloor, routeFloor, assignRoom, cropRect, toRect, toPoint, grid, inside };
+  const api = { layoutFloor, routeFloor, assignRoom, cropRect, toRect, toPoint, grid, inside, insertPins, nearestSegment, moveSegment };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.EsdLayout = api;
 })(typeof self !== 'undefined' ? self : this);

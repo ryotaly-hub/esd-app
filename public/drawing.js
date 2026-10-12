@@ -275,10 +275,13 @@
     const label = lf.name
       ? `<text x="${lf.outline.x0}" y="${Math.max(lf.outline.y0 - s * 0.8, view.y0 + s * 1.6)}" font-size="${s * 1.8}" font-weight="700" fill="#16181d" paint-order="stroke" stroke="#fff" stroke-width="${s * 0.5}">${esc(lf.name)}</text>` : '';
 
+    const ptsAttr = pts => pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
     const groups = defs.systems.map(sys => {
       const style = SYSTEM_STYLE[sys.key];
+      // route-hit は編集のときに配線をつかみやすくするための透明な太い線
       const lines = lf.routes.filter(r => r.system === sys.key).map(r =>
-        `<polyline points="${r.points.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')}" fill="none" stroke="${style.color}" stroke-width="${strokeW}" stroke-linejoin="round"${dashOf(style, strokeW)}><title>${esc(`${sys.label}（${lf.name}${r.room ? ` ${r.room}` : ''}）`)}</title></polyline>`).join('');
+        `<polyline points="${ptsAttr(r.points)}" fill="none" stroke="${style.color}" stroke-width="${strokeW}" stroke-linejoin="round"${dashOf(style, strokeW)}><title>${esc(`${sys.label}（${lf.name}${r.room ? ` ${r.room}` : ''}）`)}</title></polyline>` +
+        `<polyline class="route-hit" data-route="${esc(r.key)}" points="${ptsAttr(r.points)}" fill="none" stroke="transparent" stroke-width="${sym * 1.2}"/>`).join('');
       // hit は編集のときにつかみやすくするための透明な円
       const marks = lf.devices.map((d, di) => (d.system !== sys.key ? '' :
         `<g class="device" data-di="${di}"><title>${esc(`${typeLabel[d.type]}（${lf.name}${d.room ? ` ${d.room}` : ''}）`)}</title>${symbol(d.type, d.p[0], d.p[1], sym, style.color)}<circle class="hit" cx="${d.p[0]}" cy="${d.p[1]}" r="${sym * 1.7}" fill="transparent"/></g>`)).join('');
@@ -286,7 +289,9 @@
     }).join('');
 
     const sel = state.selected?.fi === fi ? lf.devices[state.selected.di] : null;
-    const ring = sel ? `<circle class="sel-ring" cx="${sel.p[0]}" cy="${sel.p[1]}" r="${sym * 2.1}" fill="none" stroke="#1e9bf0" stroke-width="${sym * 0.28}" stroke-dasharray="${sym * 0.7} ${sym * 0.45}"/>` : '';
+    const selRoute = state.selected?.fi === fi && state.selected.route ? lf.routes.find(r => r.key === state.selected.route) : null;
+    const ring = sel ? `<circle class="sel-ring" cx="${sel.p[0]}" cy="${sel.p[1]}" r="${sym * 2.1}" fill="none" stroke="#1e9bf0" stroke-width="${sym * 0.28}" stroke-dasharray="${sym * 0.7} ${sym * 0.45}"/>`
+      : selRoute ? `<polyline class="sel-ring" points="${ptsAttr(selRoute.points)}" fill="none" stroke="#1e9bf0" stroke-opacity="0.35" stroke-width="${sym * 0.9}" stroke-linejoin="round" pointer-events="none"/>` : '';
     return `<g class="layer" data-system="rooms"${shown('rooms')}>${roomLayer}</g>${groups}${label}${ring}`;
   }
 
@@ -364,7 +369,7 @@
 
   /* ---------- 配線図面例の表示と編集 ---------- */
   const state = {
-    floors: [],          // 表示中の階 { lf（layout.js の結果）, s, img, view（表示範囲）, key, title, auto（自動配置）, edited }
+    floors: [],          // 表示中の階 { lf（layout.js の結果）, s, img, view（表示範囲）, key, title, auto（自動配置）, routeEdits（手で直した配線）, edited }
     drawing: null, overheadRate: 0.18, yen: v => String(v), onEdit: () => {},
     hidden: new Set(['rooms']), // 非表示の系統（室の範囲は最初は隠す）
     editing: false, tool: 'select', selected: null, drag: null, history: [],
@@ -375,12 +380,19 @@
   const copyDevices = list => list.map(d => ({ ...d, p: [...d.p] }));
   const clampInto = (p, r) => [Math.min(r.x1, Math.max(r.x0, p[0])), Math.min(r.y1, Math.max(r.y0, p[1]))];
 
-  // 機器を1つ作る（位置から室を決める。分電盤はどの室にも属さない）
+  const round1 = v => Math.round(v * 10) / 10;
+  // 機器を1つ作る（位置から室を決める。分電盤はどの室にも属さない）。位置は保存する値と同じく 0.1px 単位にそろえる
+  // （そろえないと、開き直したときに自動のルートが変わり、手で直した配線が使えなくなる）。
   function makeDevice(fl, type, p) {
+    p = p.map(round1);
     const ri = type === 'panel' ? -1 : Layout.assignRoom(p, fl.lf.rooms, fl.s);
     return { type, system: typeOf(type).system, p, room: ri >= 0 ? fl.lf.rooms[ri].name : '', ri };
   }
-  const reroute = fl => Object.assign(fl.lf, Layout.routeFloor(fl.lf, fl.lf.devices, fl.s, fl.lf.widthM));
+  // 配線を引き直す。手で直した配線は、元の自動のルートが変わったもの（機器・分電盤を動かした室と系統）を捨てる。
+  function reroute(fl) {
+    Object.assign(fl.lf, Layout.routeFloor(fl.lf, fl.lf.devices, fl.s, fl.lf.widthM, fl.routeEdits));
+    for (const key of Object.keys(fl.routeEdits)) if (!fl.lf.routes.some(r => r.key === key && r.edited)) delete fl.routeEdits[key];
+  }
 
   // 保存しておいた編集（[種類, x, y] の一覧）を機器に戻す。使えなければ null。
   function restoreDevices(list, fl) {
@@ -391,6 +403,18 @@
       .map(([type, x, y]) => makeDevice(fl, type, [Math.min(fl.img.width, Math.max(0, x)), Math.min(fl.img.height, Math.max(0, y))]));
     if (!out.some(d => d.type === 'panel')) out.unshift(copyDevices(fl.auto.filter(d => d.type === 'panel'))[0]);
     return out.filter(Boolean);
+  }
+  // 保存しておいた手で直した配線（{ 系統|室の番号: { sig, points } }）を確かめて戻す
+  function restoreRoutes(obj, fl) {
+    const out = {};
+    if (!obj || typeof obj !== 'object') return out;
+    for (const [key, v] of Object.entries(obj).slice(0, 500)) {
+      if (!/^[a-z]+\|-?\d+$/.test(key) || typeof v?.sig !== 'string' || v.sig.length > 16 || !Array.isArray(v.points)) continue;
+      const pts = v.points.slice(0, 2000).filter(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+        .map(p => [round1(Math.min(fl.img.width, Math.max(0, p[0]))), round1(Math.min(fl.img.height, Math.max(0, p[1])))]);
+      if (pts.length >= 2) out[key] = { sig: v.sig, points: pts };
+    }
+    return out;
   }
 
   // 配線図面例と、その概算を表示する。drawing は AI の JSON、images は生成時に登録されていた図面、rooms は1段目の検出結果、
@@ -411,16 +435,21 @@
         lf.name = img.kind === 'single' && img.floorName ? img.floorName : lf.name || `図面${i + 1}`;
         lf.repeat = img.kind === 'single' ? img.repeat || 1 : 1;
         lf.image = i + 1;
+        lf.devices.forEach(d => { d.p = d.p.map(round1); });
         const fl = {
-          lf, s, img, key: `${i + 1}-${k + 1}`, auto: copyDevices(lf.devices), edited: false,
+          lf, s, img, key: `${i + 1}-${k + 1}`, routeEdits: {}, edited: false,
           // 複数の階をまとめた図は階ごとに切り出す
           view: img.kind === 'combined' ? Layout.cropRect(lf.outline, img, s) : { x0: 0, y0: 0, x1: img.width, y1: img.height },
           title: img.kind === 'combined'
             ? `図面${i + 1}：${lf.name}（まとめた図から切り出し）`
             : `図面${i + 1}：${lf.name}${lf.repeat > 1 ? `（同じ平面 ${lf.repeat} フロア分）` : ''}`,
         };
-        const saved = restoreDevices(edits?.[fl.key], fl);
-        if (saved) { lf.devices = saved; fl.edited = true; reroute(fl); }
+        reroute(fl); // 位置をそろえた機器で引き直す
+        fl.auto = copyDevices(lf.devices);
+        // 保存した編集は、機器の一覧（以前の形）か { devices, routes }
+        const e = edits?.[fl.key];
+        const saved = restoreDevices(Array.isArray(e) ? e : e?.devices, fl);
+        if (saved) { lf.devices = saved; fl.routeEdits = restoreRoutes(e?.routes, fl); fl.edited = true; reroute(fl); }
         state.floors.push(fl);
       });
     });
@@ -491,7 +520,7 @@
     const noScale = laid.filter(f => !f.mPerPx).map(f => f.name);
     const noPrice = est.rows.filter(r => !r.material && !r.labor).map(r => r.name);
     $('#wiring-note').textContent = [
-      `※ 機器の位置・配線ルートは、AI が読み取った室の範囲と機器の数をもとにアプリが並べた配置例です（「機器を編集する」で追加・移動・削除できます）。配線長は、建物外形の横方向の実寸から縮尺を求め、図面上の長さ×${WIRING_ALLOWANCE}（立上り・余長）で計算しています。`,
+      `※ 機器の位置・配線ルートは、AI が読み取った室の範囲と機器の数をもとにアプリが並べた配置例です（「機器を編集する」で機器の追加・移動・削除と、配線ルートの変更ができます）。配線長は、建物外形の横方向の実寸から縮尺を求め、図面上の長さ×${WIRING_ALLOWANCE}（立上り・余長）で計算しています。`,
       noScale.length ? `${noScale.join('・')} は実寸が分からないため配線の金額を含みません（図面の「1フロアの横方向の実寸」を入れて生成し直してください）。` : '',
       noPrice.length ? `${noPrice.join('・')} は AI の回答に単価が無いため 0 円で計算しています。` : '',
     ].join('');
@@ -501,7 +530,9 @@
   function saveEdits() {
     const edits = {};
     for (const fl of state.floors) {
-      if (fl.edited) edits[fl.key] = fl.lf.devices.map(d => [d.type, Math.round(d.p[0] * 10) / 10, Math.round(d.p[1] * 10) / 10]);
+      if (!fl.edited) continue;
+      const devices = fl.lf.devices.map(d => [d.type, round1(d.p[0]), round1(d.p[1])]);
+      edits[fl.key] = Object.keys(fl.routeEdits).length ? { devices, routes: fl.routeEdits } : devices;
     }
     state.onEdit(Object.keys(edits).length ? edits : null);
   }
@@ -516,7 +547,7 @@
   }
   function pushHistory(fi) {
     const fl = state.floors[fi];
-    state.history.push({ fi, devices: copyDevices(fl.lf.devices), edited: fl.edited });
+    state.history.push({ fi, devices: copyDevices(fl.lf.devices), routeEdits: { ...fl.routeEdits }, edited: fl.edited });
     if (state.history.length > MAX_HISTORY) state.history.shift();
     fl.edited = true;
   }
@@ -528,9 +559,17 @@
     if (sel && sel.fi !== before) drawOverlay(sel.fi);
     updateEditBar();
   }
+  // 選んだ機器を削除する。配線を選んでいるときは、その配線を自動のルートに戻す。
   function removeSelected() {
     const sel = state.selected;
     const fl = sel && state.floors[sel.fi];
+    if (sel?.route) {
+      if (!fl.routeEdits[sel.route]) return;
+      pushHistory(sel.fi);
+      delete fl.routeEdits[sel.route];
+      commit(sel.fi);
+      return;
+    }
     const d = fl?.lf.devices[sel.di];
     if (!d || d.type === 'panel') return;
     pushHistory(sel.fi);
@@ -543,15 +582,17 @@
     if (!h) return;
     const fl = state.floors[h.fi];
     fl.lf.devices = h.devices;
+    fl.routeEdits = h.routeEdits;
     fl.edited = h.edited;
     state.selected = null;
     commit(h.fi);
   }
   function resetAll() {
     if (!state.floors.some(f => f.edited)) return;
-    if (!confirm('編集した機器の配置をすべて取り消して、自動配置に戻しますか？')) return;
-    state.floors.forEach((fl, fi) => {
+    if (!confirm('編集した機器の配置と配線ルートをすべて取り消して、自動配置に戻しますか？')) return;
+    state.floors.forEach(fl => {
       fl.lf.devices = copyDevices(fl.auto);
+      fl.routeEdits = {};
       fl.edited = false;
       reroute(fl);
     });
@@ -566,7 +607,7 @@
   // 編集の道具（選択・移動 と、追加する機器の種類）
   function renderPalette() {
     const tool = (key, inner, title) => `<button type="button" class="tool" data-tool="${key}" aria-pressed="${state.tool === key}" title="${esc(title)}">${inner}</button>`;
-    $('#edit-palette').innerHTML = `<div class="tool-group"><span class="tool-group-label">操作</span>${tool('select', '<span>選択・移動</span>', '機器を選んでドラッグで移動')}</div>` +
+    $('#edit-palette').innerHTML = `<div class="tool-group"><span class="tool-group-label">操作</span>${tool('select', '<span>選択・移動</span>', '機器や配線を選んでドラッグで移動')}</div>` +
       defs.systems.map(sys => `<div class="tool-group"><span class="tool-group-label">${esc(sys.label)}</span>${defs.deviceTypes
         .filter(t => t.system === sys.key && t.key !== 'panel') // 分電盤は各階1つ（移動だけできる）
         .map(t => tool(t.key, `${symbolSvg(t.key, t.system)}<span>${esc(shortLabel(t))}</span>`, `${t.label}を追加（図面をクリック）`)).join('')}</div>`).join('');
@@ -587,16 +628,21 @@
   }
   function updateEditBar() {
     const sel = state.selected;
-    const d = sel && state.floors[sel.fi]?.lf.devices[sel.di];
-    $('#edit-delete').disabled = !d || d.type === 'panel';
+    const fl = sel && state.floors[sel.fi];
+    const d = sel && !sel.route && fl?.lf.devices[sel.di];
+    const r = sel?.route && fl?.lf.routes.find(x => x.key === sel.route);
+    $('#edit-delete').textContent = r ? '選んだ配線を自動のルートに戻す' : '選んだ機器を削除';
+    $('#edit-delete').disabled = r ? !r.edited : !d || d.type === 'panel';
     $('#edit-undo').disabled = !state.history.length;
     $('#edit-reset').disabled = !state.floors.some(f => f.edited);
     const t = state.tool !== 'select' && typeOf(state.tool);
     $('#edit-status').textContent = t
       ? `「${t.label}」を追加します。図面の置きたい場所をクリックしてください（Esc で選択・移動に戻る）。`
-      : d
+      : r
+        ? `選択中: ${defs.systems.find(x => x.key === r.system)?.label || ''}の配線（${fl.lf.name}${r.room ? ` ${r.room}` : ''}）。線をドラッグすると、その区間を平行に動かせます${r.edited ? '（Delete キーで自動のルートに戻す）' : ''}。機器や分電盤を動かすと、その配線は自動のルートに戻ります。`
+        : d
         ? `選択中: ${typeOf(d.type).label}（${state.floors[sel.fi].lf.name}${d.room ? ` ${d.room}` : ''}）${d.type === 'panel' ? '。分電盤は移動だけできます。' : '。ドラッグで移動、Delete キーで削除できます。'}`
-        : '機器をクリックして選び、ドラッグで移動できます。追加するときは下の一覧から機器を選んでください。';
+        : '機器や配線をクリックして選び、ドラッグで移動できます（配線はつかんだ区間を平行に動かす）。追加するときは下の一覧から機器を選んでください。';
   }
 
   // 画面上の位置を SVG の座標（元の画像の px）にする
@@ -617,6 +663,20 @@
     e.preventDefault();
     if (state.tool === 'select') {
       const g = e.target.closest('.device');
+      const line = !g && e.target.closest('.route-hit');
+      if (line) {
+        // 配線をつかんだ: 途中の機器の点で区間を分け、つかんだ所に一番近い区間を動かす
+        const rt = fl.lf.routes.find(r => r.key === line.dataset.route);
+        if (!rt) return;
+        const pins = fl.lf.devices.map(x => x.p);
+        const base = Layout.insertPins(rt.points, pins);
+        const i = Layout.nearestSegment(base, pt);
+        select({ fi, route: rt.key });
+        if (i < 0) return;
+        state.drag = { fi, route: rt.key, sig: rt.sig, base, i, pins, svg, start: pt, moved: false, frame: 0 };
+        svg.setPointerCapture(e.pointerId);
+        return;
+      }
       if (!g) { select(null); return; }
       const di = Number(g.dataset.di);
       select({ fi, di });
@@ -640,8 +700,17 @@
       pushHistory(d.fi);
       d.moved = true;
     }
-    const dev = fl.lf.devices[d.di];
-    Object.assign(dev, makeDevice(fl, dev.type, clampInto([d.orig[0] + dx, d.orig[1] + dy], fl.view)));
+    if (d.route) {
+      // 横の線は上下に、縦の線は左右に動かす（表示範囲の外には出さない）
+      const a = d.base[d.i], b = d.base[d.i + 1];
+      const axis = a[1] === b[1] ? 1 : 0;
+      const lo = axis ? fl.view.y0 : fl.view.x0, hi = axis ? fl.view.y1 : fl.view.x1;
+      const delta = round1(Math.min(hi, Math.max(lo, a[axis] + (axis ? dy : dx))) - a[axis]);
+      fl.routeEdits[d.route] = { sig: d.sig, points: Layout.moveSegment(d.base, d.i, delta, d.pins) };
+    } else {
+      const dev = fl.lf.devices[d.di];
+      Object.assign(dev, makeDevice(fl, dev.type, clampInto([d.orig[0] + dx, d.orig[1] + dy], fl.view)));
+    }
     // 動かしている間も配線を引き直して見せる（1フレームに1回）
     if (!d.frame) d.frame = requestAnimationFrame(() => { d.frame = 0; reroute(fl); drawOverlay(d.fi); });
   });
@@ -681,7 +750,7 @@
     for (const fig of figs) {
       const svg = fig.querySelector('svg');
       const clone = svg.cloneNode(true);
-      clone.querySelectorAll('.sel-ring, .hit').forEach(n => n.remove());
+      clone.querySelectorAll('.sel-ring, .hit, .route-hit').forEach(n => n.remove());
       const xml = new XMLSerializer().serializeToString(clone);
       const img = await loadImage(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`);
       const canvas = document.createElement('canvas');
