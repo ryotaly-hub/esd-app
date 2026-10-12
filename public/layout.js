@@ -214,6 +214,19 @@
     return simplify([...pts.slice(0, i), ...(fixedA ? [a] : []), move(a), move(b), ...(fixedB ? [b] : []), ...pts.slice(i + 2)]);
   }
 
+  // j 番目の角を (dx, dy) だけ動かす（角の前後の区間をそれぞれ平行に動かす）。端と機器の点は角として動かさない。
+  function moveCorner(pts, j, dx, dy, pins) {
+    const a = pts[j - 1], c = pts[j], b = pts[j + 1];
+    if (!a || !b || isPinned(c, pins)) return pts;
+    const axisOf = (p, q) => (p[1] === q[1] ? 1 : 0); // 横の区間は y、縦の区間は x を動かす
+    const ap = axisOf(a, c), an = axisOf(c, b);
+    if (ap === an) return pts;
+    const d = [dx, dy];
+    const move = (p, axis) => { const q = [...p]; q[axis] += d[axis]; return q; };
+    const fixedA = j - 1 === 0 || isPinned(a, pins), fixedB = j + 1 === pts.length - 1 || isPinned(b, pins);
+    return simplify([...pts.slice(0, j - 1), ...(fixedA ? [a] : []), move(a, ap), [c[0] + dx, c[1] + dy], move(b, an), ...(fixedB ? [b] : []), ...pts.slice(j + 2)]);
+  }
+
   // 自動のルートの目印。手で直したルートは、元にした自動のルートと目印が同じとき（機器・分電盤が動いていないとき）だけ使う。
   function sigOf(pts) {
     let h = 5381;
@@ -264,7 +277,67 @@
     return pts;
   }
 
-  const polylineLength = pts => pts.slice(1).reduce((sum, p, i) => sum + dist(p, pts[i]), 0);
+  // 折れ線の合計の長さ。同じ線の上に重なった部分は1本として数える（同じ系統の配線をまとめて1本で引く扱い）。
+  function unionLength(polys) {
+    const lines = new Map(); // 'h:y' / 'v:x' → [[開始, 終了], ...]
+    for (const pts of polys) {
+      pts.slice(1).forEach((b, i) => {
+        const a = pts[i];
+        const [key, lo, hi] = a[1] === b[1] ? [`h:${a[1]}`, a[0], b[0]] : [`v:${a[0]}`, a[1], b[1]];
+        if (lo === hi) return;
+        if (!lines.has(key)) lines.set(key, []);
+        lines.get(key).push([Math.min(lo, hi), Math.max(lo, hi)]);
+      });
+    }
+    let sum = 0;
+    for (const list of lines.values()) {
+      list.sort((p, q) => p[0] - q[0]);
+      let [s0, s1] = list[0];
+      for (const [x0, x1] of list.slice(1)) {
+        if (x0 > s1) { sum += s1 - s0; [s0, s1] = [x0, x1]; } else s1 = Math.max(s1, x1);
+      }
+      sum += s1 - s0;
+    }
+    return sum;
+  }
+
+  // 最短ルート: 分電盤から、今ある配線（点と区間）に一番近い機器を順に L 字（縦横）でつなぐ。
+  // 区間の途中からも分岐できるので、同じ方向の機器は1本の配線にまとまり、全体の長さが短くなる。
+  function shortestTree(panel, devices) {
+    const segs = [];          // 引いた区間 [a, b]
+    const left = [...devices];
+    const out = [];
+    const manhattan = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]);
+    // 区間の上で点 p に一番近い点
+    const nearOn = (p, a, b) => clampInto(p, { x0: Math.min(a[0], b[0]), y0: Math.min(a[1], b[1]), x1: Math.max(a[0], b[0]), y1: Math.max(a[1], b[1]) });
+    const best = left.map(d => ({ q: panel, dd: manhattan(d.p, panel) }));
+    const overlap = (pts) => pts.slice(1).reduce((sum, b, i) => sum + segs.reduce((t, [c, e]) => {
+      const a = pts[i];
+      if (a[1] === b[1] && c[1] === e[1] && a[1] === c[1]) return t + Math.max(0, Math.min(Math.max(a[0], b[0]), Math.max(c[0], e[0])) - Math.max(Math.min(a[0], b[0]), Math.min(c[0], e[0])));
+      if (a[0] === b[0] && c[0] === e[0] && a[0] === c[0]) return t + Math.max(0, Math.min(Math.max(a[1], b[1]), Math.max(c[1], e[1])) - Math.max(Math.min(a[1], b[1]), Math.min(c[1], e[1])));
+      return t;
+    }, 0), 0);
+    while (left.length) {
+      let k = 0;
+      best.forEach((b, i) => { if (b.dd < best[k].dd) k = i; });
+      const d = left[k], q = best[k].q;
+      // 横→縦 と 縦→横 のうち、既にある配線とよく重なる方（同じなら横から）
+      const h = [q, [d.p[0], q[1]], d.p], v = [q, [q[0], d.p[1]], d.p];
+      const pts = simplify(overlap(v) > overlap(h) ? v : h);
+      out.push({ device: d, points: pts });
+      left.splice(k, 1); best.splice(k, 1);
+      const added = pts.slice(1).map((b, i) => [pts[i], b]);
+      segs.push(...added);
+      // 新しい区間の方が近い機器は、つなぐ先を更新する
+      left.forEach((x, i) => {
+        for (const [a, b] of added) {
+          const q2 = nearOn(x.p, a, b), dd = manhattan(x.p, q2);
+          if (dd < best[i].dd) best[i] = { q: q2, dd };
+        }
+      });
+    }
+    return out;
+  }
 
   // 点がどの室にあるか（rooms の番号）。室の内側なら一番小さい室、少し外なら近い室、離れていれば -1。
   function assignRoom(p, rooms, s) {
@@ -279,7 +352,8 @@
   // 機器の位置から配線ルートと系統ごとの配線長を作る（自動配置のあとも、画面で機器を動かしたあとも使う）。
   // 機器は ri（rooms の番号、室の外は -1）を持つ。室の中の機器は廊下を通って入口から、室の外の機器は分電盤から直接つなぐ。
   // overrides は画面で手で直したルート（{ 系統|室の番号: { sig, points } }）。元の自動のルートが変わっていなければそれを使う。
-  function routeFloor(geo, devices, s, widthM, overrides = null) {
+  // shortest は最短ルートで結ぶ系統の一覧（室ごとの幹線をやめ、系統ごとに1つの木にまとめる）。
+  function routeFloor(geo, devices, s, widthM, overrides = null, shortest = []) {
     const { outline, rooms } = geo;
     const corridors = rooms.filter(r => r.kind === 'corridor');
     const panelDevice = devices.find(d => d.type === 'panel');
@@ -297,10 +371,15 @@
       const use = !!o && o.sig === sig && Array.isArray(o.points) && orthogonal(o.points);
       routes.push({ system, room, key, sig, points: use ? o.points : auto, edited: use });
     };
+    for (const sys of SYSTEM_ORDER.filter(x => shortest.includes(x))) {
+      const mine = devices.filter(d => d !== panelDevice && d.system === sys);
+      shortestTree(panel, mine).forEach((t, k) => add(sys, t.device.room || '', `${sys}|s${k}`, t.points));
+    }
     rooms.forEach((room, i) => {
       if (!byRoom[i].length) return;
       const entry = entryOf(room.rect, panel, s);
       SYSTEM_ORDER.forEach((sys, k) => {
+        if (shortest.includes(sys)) return;
         const mine = byRoom[i].filter(d => d.system === sys);
         if (!mine.length) return;
         const offset = (k - 1.5) * s * 0.55; // 系統ごとに幹線を少しずらして重ならないようにする
@@ -309,13 +388,14 @@
       });
     });
     SYSTEM_ORDER.forEach(sys => {
+      if (shortest.includes(sys)) return;
       const mine = loose.filter(d => d.system === sys);
       if (mine.length) add(sys, '', `${sys}|-1`, simplify(chain(panel, mine, s)));
     });
     const mPerPx = widthM ? widthM / width(outline) : null;
     return {
       routes, mPerPx,
-      lengthBySystem: Object.fromEntries(SYSTEM_ORDER.map(sys => [sys, mPerPx ? routes.filter(r => r.system === sys).reduce((sum, r) => sum + polylineLength(r.points), 0) * mPerPx : 0])),
+      lengthBySystem: Object.fromEntries(SYSTEM_ORDER.map(sys => [sys, mPerPx ? unionLength(routes.filter(r => r.system === sys).map(r => r.points)) * mPerPx : 0])),
     };
   }
 
@@ -358,7 +438,7 @@
     return { name: String(floor.name || ''), outline, rooms, devices, widthM, ...routeFloor({ outline, rooms }, devices, s, widthM) };
   }
 
-  const api = { layoutFloor, routeFloor, assignRoom, cropRect, toRect, toPoint, grid, inside, insertPins, nearestSegment, moveSegment };
+  const api = { layoutFloor, routeFloor, assignRoom, cropRect, toRect, toPoint, grid, inside, insertPins, nearestSegment, moveSegment, moveCorner, unionLength, SYSTEM_ORDER };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.EsdLayout = api;
 })(typeof self !== 'undefined' ? self : this);

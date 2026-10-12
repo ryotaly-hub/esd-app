@@ -225,6 +225,34 @@ assert_eq "route: 分電盤側と末端は動かない" "true" "$(echo "$moved" 
 assert_eq "route: 手で直したルートを使う" "true" "$(echo "$moved" | cut -d, -f5)"
 assert_eq "route: 機器を動かすと自動のルートに戻る" "false" "$(echo "$moved" | cut -d, -f6)"
 
+# --- 角の移動・重なった配線の長さ・最短ルート（moveCorner / unionLength / routeFloor の shortest） ---
+tree=$(node -e '
+const L = require("./public/layout.js");
+const types = JSON.parse(process.argv[1]).drawing.deviceTypes;
+const corner = L.moveCorner([[0, 0], [10, 0], [10, 10], [20, 10]], 2, 3, -4, []);
+const union = L.unionLength([[[0, 0], [10, 0]], [[5, 0], [15, 0], [15, 5]]]);
+const floor = { box_2d: [100, 100, 900, 900], panel: [850, 880], rooms: [
+  { name: "事務室", kind: "room", box_2d: [120, 120, 700, 600], devices: { outlet: 6, power_outlet: 2, light: 6 } },
+  { name: "会議室", kind: "room", box_2d: [120, 620, 500, 880], devices: { outlet: 3 } },
+  { name: "廊下", kind: "corridor", box_2d: [720, 120, 880, 880], devices: { light: 2 } } ] };
+const f = L.layoutFloor(floor, { width: 1000, height: 1000 }, 8, types, 30);
+f.devices.forEach(d => { d.p = d.p.map(v => Math.round(v * 10) / 10); });
+const std = L.routeFloor(f, f.devices, 8, 30);
+const sh = L.routeFloor(f, f.devices, 8, 30, null, ["power"]);
+const onSeg = (p, a, b) => Math.abs((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) < 0.5
+  && p[0] >= Math.min(a[0], b[0]) - 0.2 && p[0] <= Math.max(a[0], b[0]) + 0.2 && p[1] >= Math.min(a[1], b[1]) - 0.2 && p[1] <= Math.max(a[1], b[1]) + 0.2;
+const power = f.devices.filter(d => d.system === "power" && d.type !== "panel");
+const connected = power.every(d => sh.routes.some(rt => rt.system === "power" && rt.points.slice(1).some((p, i) => onSeg(d.p, rt.points[i], p))));
+const orth = sh.routes.every(rt => rt.points.slice(1).every((p, i) => p[0] === rt.points[i][0] || p[1] === rt.points[i][1]));
+console.log([JSON.stringify(corner), union, connected, orth, sh.lengthBySystem.power < std.lengthBySystem.power, sh.lengthBySystem.lighting === std.lengthBySystem.lighting].join(";"));
+' "$opts")
+assert_eq "corner: 角を動かすと前後の区間が一緒に動く" "[[0,0],[13,0],[13,6],[20,6],[20,10]]" "$(echo "$tree" | cut -d';' -f1)"
+assert_eq "length: 重なった部分は1本として数える" "20" "$(echo "$tree" | cut -d';' -f2)"
+assert_eq "shortest: すべての機器が配線につながる" "true" "$(echo "$tree" | cut -d';' -f3)"
+assert_eq "shortest: 縦横の直線だけ" "true" "$(echo "$tree" | cut -d';' -f4)"
+assert_eq "shortest: 標準のルートより短い" "true" "$(echo "$tree" | cut -d';' -f5)"
+assert_eq "shortest: 選ばなかった系統は変わらない" "true" "$(echo "$tree" | cut -d';' -f6)"
+
 # --- 合言葉（Basic 認証） ---
 AUTH_URL="http://localhost:$AUTH_PORT"
 assert_eq "auth: 合言葉なしは 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' "$AUTH_URL/")"
